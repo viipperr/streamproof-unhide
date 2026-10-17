@@ -3,11 +3,11 @@
 #include <cstdio>
 #include <vector>
 
-static bool BringToFrontCentered(HWND hwnd, bool alwaysOnTop = false) {
+static bool BringToFrontCentered(HWND hwnd, bool alwaysOnTop = false, HWND monAnchor = nullptr) {
     if (!IsWindow(hwnd)) return false;
     if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
 
-    HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    HMONITOR mon = MonitorFromWindow(monAnchor ? monAnchor : hwnd, MONITOR_DEFAULTTONEAREST);
     MONITORINFO mi{ sizeof(mi) };
     GetMonitorInfo(mon, &mi);
     RECT r;
@@ -210,7 +210,7 @@ int main() {
                after, after == 0 ? "(cleared)" : "(still set?)");
 
         if (after == 0)
-            BringToFrontCentered(h.hwnd, true);
+            BringToFrontCentered(h.hwnd, true, GetConsoleWindow());
     }
 
     getchar();
