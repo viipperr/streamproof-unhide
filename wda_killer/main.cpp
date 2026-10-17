@@ -123,7 +123,11 @@ int main() {
     FILE* f = nullptr;
     freopen_s(&f, "CONOUT$", "w", stdout);
 
-    printf("=== WDA Killer ===\n\n");
+    HANDLE con = GetStdHandle(STD_OUTPUT_HANDLE);
+    SetConsoleTextAttribute(con, FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+    printf("streamproof-unhide");
+    SetConsoleTextAttribute(con, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
+    printf("  by vipper. https://github.com/viipperr\n\n");
 
     std::vector<WdaHit> hits;
     EnumWindows(EnumCb, reinterpret_cast<LPARAM>(&hits));
