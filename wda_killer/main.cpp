@@ -3,6 +3,33 @@
 #include <cstdio>
 #include <vector>
 
+static bool BringToFrontCentered(HWND hwnd, bool alwaysOnTop = false) {
+    if (!IsWindow(hwnd)) return false;
+    if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+
+    HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{ sizeof(mi) };
+    GetMonitorInfo(mon, &mi);
+    RECT r;
+    GetWindowRect(hwnd, &r);
+    int w = r.right - r.left, h = r.bottom - r.top;
+    int x = mi.rcWork.left + ((mi.rcWork.right - mi.rcWork.left) - w) / 2;
+    int y = mi.rcWork.top  + ((mi.rcWork.bottom - mi.rcWork.top)  - h) / 2;
+
+    SetWindowPos(hwnd, alwaysOnTop ? HWND_TOPMOST : HWND_TOP, x, y, 0, 0,
+                 SWP_NOSIZE | SWP_SHOWWINDOW);
+
+    HWND fg = GetForegroundWindow();
+    DWORD fgThread = GetWindowThreadProcessId(fg, nullptr);
+    DWORD myThread = GetCurrentThreadId();
+    if (fg && fgThread != myThread) AttachThreadInput(myThread, fgThread, TRUE);
+    BringWindowToTop(hwnd);
+    bool ok = SetForegroundWindow(hwnd) != FALSE;
+    SetFocus(hwnd);
+    if (fg && fgThread != myThread) AttachThreadInput(myThread, fgThread, FALSE);
+    return ok;
+}
+
 #ifndef WDA_EXCLUDEFROMCAPTURE
 #define WDA_EXCLUDEFROMCAPTURE 0x00000011
 #endif
@@ -119,10 +146,6 @@ static bool ClearWda(HWND hwnd, DWORD pid) {
 }
 
 int main() {
-    AllocConsole();
-    FILE* f = nullptr;
-    freopen_s(&f, "CONOUT$", "w", stdout);
-
     HANDLE con = GetStdHandle(STD_OUTPUT_HANDLE);
     SetConsoleTextAttribute(con, FOREGROUND_GREEN | FOREGROUND_INTENSITY);
     printf("streamproof-unhide");
@@ -158,6 +181,17 @@ int main() {
         GetWindowDisplayAffinity(h.hwnd, &after);
         printf("OK  ->  affinity after: 0x%X %s\n\n",
                after, after == 0 ? "(cleared)" : "(still set?)");
+
+        if (after == 0) {
+            RECT r{}; GetWindowRect(h.hwnd, &r);
+            int w = r.right - r.left, wh = r.bottom - r.top;
+            int sw = GetSystemMetrics(SM_CXSCREEN);
+            int sh = GetSystemMetrics(SM_CYSCREEN);
+            SetWindowPos(h.hwnd, HWND_TOPMOST,
+                         (sw - w) / 2, (sh - wh) / 2, 0, 0,
+                         SWP_NOSIZE | SWP_SHOWWINDOW);
+            SetForegroundWindow(h.hwnd);
+        }
     }
 
     system("pause");
