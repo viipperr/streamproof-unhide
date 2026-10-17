@@ -13,7 +13,7 @@ static bool BringToFrontCentered(HWND hwnd, bool alwaysOnTop = false) {
     RECT r;
     GetWindowRect(hwnd, &r);
     int w = r.right - r.left, h = r.bottom - r.top;
-    int x = mi.rcWork.left + ((mi.rcWork.right - mi.rcWork.left) - w) / 2;
+    int x = mi.rcWork.left + ((mi.rcWork.right  - mi.rcWork.left) - w) / 2;
     int y = mi.rcWork.top  + ((mi.rcWork.bottom - mi.rcWork.top)  - h) / 2;
 
     SetWindowPos(hwnd, alwaysOnTop ? HWND_TOPMOST : HWND_TOP, x, y, 0, 0,
@@ -35,10 +35,10 @@ static bool BringToFrontCentered(HWND hwnd, bool alwaysOnTop = false) {
 #endif
 
 struct WdaHit {
-    HWND  hwnd;
-    DWORD pid;
-    DWORD affinity;
-    char  title[256];
+    HWND    hwnd;
+    DWORD   pid;
+    DWORD   affinity;
+    char    title[256];
     wchar_t exename[260];
 };
 
@@ -78,33 +78,59 @@ static BOOL CALLBACK EnumCb(HWND hwnd, LPARAM lp) {
     return TRUE;
 }
 
-// Injects shellcode into pid that calls SetWindowDisplayAffinity(hwnd, WDA_NONE).
-// USER32.dll maps at the same VA in every process on the same boot — no relocation needed.
+typedef NTSTATUS (NTAPI* pNtCreateThreadEx)(
+    PHANDLE, ACCESS_MASK, LPVOID, HANDLE,
+    LPTHREAD_START_ROUTINE, LPVOID, ULONG,
+    SIZE_T, SIZE_T, SIZE_T, LPVOID);
+
+typedef LPVOID (WINAPI* pVirtualAllocEx)(HANDLE, LPVOID, SIZE_T, DWORD, DWORD);
+typedef BOOL   (WINAPI* pWriteProcessMemory)(HANDLE, LPVOID, LPCVOID, SIZE_T, SIZE_T*);
+typedef BOOL   (WINAPI* pVirtualProtectEx)(HANDLE, LPVOID, SIZE_T, DWORD, PDWORD);
+typedef BOOL   (WINAPI* pVirtualFreeEx)(HANDLE, LPVOID, SIZE_T, DWORD);
+
 static bool ClearWda(HWND hwnd, DWORD pid) {
-    HMODULE u32 = GetModuleHandleA("user32.dll");
-    if (!u32) u32 = LoadLibraryA("user32.dll");
-    FARPROC fn = GetProcAddress(u32, "SetWindowDisplayAffinity");
+    char s_u32[]   = { 'u','s','e','r','3','2','.','d','l','l',0 };
+    char s_fn[]    = { 'S','e','t','W','i','n','d','o','w','D','i','s','p','l','a','y',
+                       'A','f','f','i','n','i','t','y',0 };
+    char s_k32[]   = { 'k','e','r','n','e','l','3','2','.','d','l','l',0 };
+    char s_ntd[]   = { 'n','t','d','l','l','.','d','l','l',0 };
+    char s_nte[]   = { 'N','t','C','r','e','a','t','e','T','h','r','e','a','d','E','x',0 };
+    char s_vae[]   = { 'V','i','r','t','u','a','l','A','l','l','o','c','E','x',0 };
+    char s_wpm[]   = { 'W','r','i','t','e','P','r','o','c','e','s','s','M','e','m','o','r','y',0 };
+    char s_vpe[]   = { 'V','i','r','t','u','a','l','P','r','o','t','e','c','t','E','x',0 };
+    char s_vfe[]   = { 'V','i','r','t','u','a','l','F','r','e','e','E','x',0 };
+
+    HMODULE u32 = GetModuleHandleA(s_u32);
+    if (!u32) u32 = LoadLibraryA(s_u32);
+    FARPROC fn = GetProcAddress(u32, s_fn);
     if (!fn) return false;
 
-    // x64 shellcode:
-    //   mov rcx, <hwnd>        ; 48 B9 [8]
-    //   xor edx, edx           ; 33 D2          (WDA_NONE = 0)
-    //   sub rsp, 28h           ; 48 83 EC 28    (shadow space + align)
-    //   mov rax, <fn>          ; 48 B8 [8]
-    //   call rax               ; FF D0
-    //   add rsp, 28h           ; 48 83 C4 28
-    //   xor eax, eax           ; 33 C0
-    //   ret                    ; C3
-    unsigned char sc[35] = {
-        0x48, 0xB9, 0,0,0,0,0,0,0,0,   // [0..9]
-        0x33, 0xD2,                      // [10,11]
-        0x48, 0x83, 0xEC, 0x28,          // [12..15]
-        0x48, 0xB8, 0,0,0,0,0,0,0,0,   // [16..25]
-        0xFF, 0xD0,                      // [26,27]
-        0x48, 0x83, 0xC4, 0x28,          // [28..31]
-        0x33, 0xC0,                      // [32,33]
-        0xC3                             // [34]
+    HMODULE k32  = GetModuleHandleA(s_k32);
+    HMODULE ntdl = GetModuleHandleA(s_ntd);
+
+    auto _VirtualAllocEx     = (pVirtualAllocEx)    GetProcAddress(k32,  s_vae);
+    auto _WriteProcessMemory = (pWriteProcessMemory) GetProcAddress(k32,  s_wpm);
+    auto _VirtualProtectEx   = (pVirtualProtectEx)   GetProcAddress(k32,  s_vpe);
+    auto _VirtualFreeEx      = (pVirtualFreeEx)      GetProcAddress(k32,  s_vfe);
+    auto _NtCreateThreadEx   = (pNtCreateThreadEx)   GetProcAddress(ntdl, s_nte);
+
+    if (!_VirtualAllocEx || !_WriteProcessMemory || !_VirtualProtectEx ||
+        !_VirtualFreeEx  || !_NtCreateThreadEx) return false;
+
+#define SC_KEY 0xAB
+    unsigned char sc_enc[] = {
+        0x48^SC_KEY, 0xB9^SC_KEY, 0^SC_KEY,0^SC_KEY,0^SC_KEY,0^SC_KEY,0^SC_KEY,0^SC_KEY,0^SC_KEY,0^SC_KEY,
+        0x33^SC_KEY, 0xD2^SC_KEY,
+        0x48^SC_KEY, 0x83^SC_KEY, 0xEC^SC_KEY, 0x28^SC_KEY,
+        0x48^SC_KEY, 0xB8^SC_KEY, 0^SC_KEY,0^SC_KEY,0^SC_KEY,0^SC_KEY,0^SC_KEY,0^SC_KEY,0^SC_KEY,0^SC_KEY,
+        0xFF^SC_KEY, 0xD0^SC_KEY,
+        0x48^SC_KEY, 0x83^SC_KEY, 0xC4^SC_KEY, 0x28^SC_KEY,
+        0x33^SC_KEY, 0xC0^SC_KEY,
+        0xC3^SC_KEY
     };
+    unsigned char sc[35];
+    for (int i = 0; i < 35; i++) sc[i] = sc_enc[i] ^ SC_KEY;
+#undef SC_KEY
 
     ULONG64 hwnd64 = (ULONG64)(ULONG_PTR)hwnd;
     ULONG64 fn64   = (ULONG64)(ULONG_PTR)fn;
@@ -119,27 +145,28 @@ static bool ClearWda(HWND hwnd, DWORD pid) {
         return false;
     }
 
-    LPVOID mem = VirtualAllocEx(proc, nullptr, sizeof(sc),
-                                MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-    if (!mem) {
-        CloseHandle(proc);
-        return false;
-    }
+    LPVOID mem = _VirtualAllocEx(proc, nullptr, sizeof(sc),
+                                 MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!mem) { CloseHandle(proc); return false; }
 
     SIZE_T written = 0;
-    WriteProcessMemory(proc, mem, sc, sizeof(sc), &written);
+    _WriteProcessMemory(proc, mem, sc, sizeof(sc), &written);
 
-    HANDLE thr = CreateRemoteThread(proc, nullptr, 0,
-                                    (LPTHREAD_START_ROUTINE)mem, nullptr, 0, nullptr);
+    DWORD old = 0;
+    _VirtualProtectEx(proc, mem, sizeof(sc), PAGE_EXECUTE_READ, &old);
+
+    HANDLE thr = nullptr;
+    _NtCreateThreadEx(&thr, GENERIC_ALL, nullptr, proc,
+                      (LPTHREAD_START_ROUTINE)mem, nullptr, 0, 0, 0, 0, nullptr);
     if (!thr) {
-        printf("  CreateRemoteThread failed: %lu\n", GetLastError());
-        VirtualFreeEx(proc, mem, 0, MEM_RELEASE);
+        printf("  thread creation failed\n");
+        _VirtualFreeEx(proc, mem, 0, MEM_RELEASE);
         CloseHandle(proc);
         return false;
     }
 
     WaitForSingleObject(thr, 3000);
-    VirtualFreeEx(proc, mem, 0, MEM_RELEASE);
+    _VirtualFreeEx(proc, mem, 0, MEM_RELEASE);
     CloseHandle(thr);
     CloseHandle(proc);
     return true;
@@ -157,7 +184,7 @@ int main() {
 
     if (hits.empty()) {
         printf("No WDA-protected windows found.\n");
-        system("pause");
+        getchar();
         return 0;
     }
 
@@ -182,18 +209,10 @@ int main() {
         printf("OK  ->  affinity after: 0x%X %s\n\n",
                after, after == 0 ? "(cleared)" : "(still set?)");
 
-        if (after == 0) {
-            RECT r{}; GetWindowRect(h.hwnd, &r);
-            int w = r.right - r.left, wh = r.bottom - r.top;
-            int sw = GetSystemMetrics(SM_CXSCREEN);
-            int sh = GetSystemMetrics(SM_CYSCREEN);
-            SetWindowPos(h.hwnd, HWND_TOPMOST,
-                         (sw - w) / 2, (sh - wh) / 2, 0, 0,
-                         SWP_NOSIZE | SWP_SHOWWINDOW);
-            SetForegroundWindow(h.hwnd);
-        }
+        if (after == 0)
+            BringToFrontCentered(h.hwnd, true);
     }
 
-    system("pause");
+    getchar();
     return 0;
 }
