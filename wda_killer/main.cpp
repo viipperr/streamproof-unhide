@@ -2,6 +2,7 @@
 #include <TlHelp32.h>
 #include <cstdio>
 #include <vector>
+#include <set>
 
 static bool BringToFrontCentered(HWND hwnd, bool alwaysOnTop = false, HWND monAnchor = nullptr) {
     if (!IsWindow(hwnd)) return false;
@@ -178,41 +179,51 @@ int main() {
     printf("streamproof-unhide");
     SetConsoleTextAttribute(con, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
     printf("  by vipper. https://github.com/viipperr\n\n");
+    printf("Scanning continuously. Ctrl+C to exit.\n\n");
 
-    std::vector<WdaHit> hits;
-    EnumWindows(EnumCb, reinterpret_cast<LPARAM>(&hits));
+    std::set<HWND> cleared;
 
-    if (hits.empty()) {
-        printf("No WDA-protected windows found.\n");
-        getchar();
-        return 0;
-    }
+    for (DWORD cycle = 0; ; cycle++) {
+        std::vector<WdaHit> hits;
+        EnumWindows(EnumCb, reinterpret_cast<LPARAM>(&hits));
 
-    printf("Found %zu protected window(s):\n\n", hits.size());
+        for (auto& h : hits)
+            if (cleared.count(h.hwnd))
+                cleared.erase(h.hwnd);  // WDA re-applied, process again
 
-    for (auto& h : hits) {
-        printf("HWND: %p  PID: %lu  affinity: 0x%X\n",
-               (void*)h.hwnd, h.pid, h.affinity);
-        printf("  exe:   %ls\n", h.exename);
-        printf("  title: %s\n", h.title[0] ? h.title : "(none)");
-        printf("  removing WDA... ");
+        for (auto& h : hits) {
+            if (cleared.count(h.hwnd)) continue;
 
-        bool ok = ClearWda(h.hwnd, h.pid);
-        if (!ok) {
-            printf("FAIL\n\n");
-            continue;
+            printf("HWND: %p  PID: %lu  affinity: 0x%X\n",
+                   (void*)h.hwnd, h.pid, h.affinity);
+            printf("  exe:   %ls\n", h.exename);
+            printf("  title: %s\n", h.title[0] ? h.title : "(none)");
+            printf("  removing WDA... ");
+
+            bool ok = ClearWda(h.hwnd, h.pid);
+            if (!ok) {
+                printf("FAIL\n\n");
+                continue;
+            }
+
+            Sleep(150);
+            DWORD after = 0;
+            GetWindowDisplayAffinity(h.hwnd, &after);
+            printf("OK  ->  affinity after: 0x%X %s\n\n",
+                   after, after == 0 ? "(cleared)" : "(still set?)");
+
+            if (after == 0) {
+                cleared.insert(h.hwnd);
+                BringToFrontCentered(h.hwnd, true, GetConsoleWindow());
+            }
         }
 
-        Sleep(150);
-        DWORD after = 0;
-        GetWindowDisplayAffinity(h.hwnd, &after);
-        printf("OK  ->  affinity after: 0x%X %s\n\n",
-               after, after == 0 ? "(cleared)" : "(still set?)");
+        for (auto it = cleared.begin(); it != cleared.end(); )
+            it = IsWindow(*it) ? std::next(it) : cleared.erase(it);
 
-        if (after == 0)
-            BringToFrontCentered(h.hwnd, true, GetConsoleWindow());
+        printf("\r[cycle %lu | cleared %zu]   ", cycle, cleared.size());
+        fflush(stdout);
+
+        Sleep(500);
     }
-
-    getchar();
-    return 0;
 }
